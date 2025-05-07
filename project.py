@@ -58,7 +58,7 @@ class ToDoApp:
         
         ttk.Label(input_frame, text="Task:", anchor="center", width=20).grid(row=0, column=1, pady=3)
         self.task_entry = ttk.Entry(input_frame, textvariable=self.task_var, width=40)
-        self.task_entry.grid(row=0, column=2, pady=3, padx=1)
+        self.task_entry.grid(row=0, column=2, pady=3)
         
         ttk.Label(input_frame, text="Deadline:", anchor="center", width=20).grid(row=1, column=1, pady=3)
         date_frame = ttk.Frame(input_frame)
