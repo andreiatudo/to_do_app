@@ -56,23 +56,23 @@ class ToDoApp:
         input_frame.grid(row=1, column=0, pady=5, sticky="nsew")
         for i in range(4): input_frame.columnconfigure(i, weight=1 if i in [0,3] else 0)
         
-        ttk.Label(input_frame, text="Task:", anchor="center", width=20).grid(row=0, column=1, pady=3, padx=5)
+        ttk.Label(input_frame, text="Task:", anchor="center", width=20).grid(row=0, column=1, pady=3)
         self.task_entry = ttk.Entry(input_frame, textvariable=self.task_var, width=40)
-        self.task_entry.grid(row=0, column=2, pady=3, padx=5)
+        self.task_entry.grid(row=0, column=2, pady=3, padx=1)
         
-        ttk.Label(input_frame, text="Deadline:", anchor="center", width=20).grid(row=1, column=1, pady=3, padx=5)
+        ttk.Label(input_frame, text="Deadline:", anchor="center", width=20).grid(row=1, column=1, pady=3)
         date_frame = ttk.Frame(input_frame)
-        date_frame.grid(row=1, column=2, pady=3, padx=5)
+        date_frame.grid(row=1, column=2, pady=3)
         self.deadline_entry = DateEntry(date_frame, width=38, 
                                      background='darkblue', foreground='white',
                                      borderwidth=2, date_pattern='dd-mm-yyyy',
                                      textvariable=self.deadline_var)
         self.deadline_entry.pack(fill='x')
         
-        ttk.Label(input_frame, text="Priority:", anchor="center", width=20).grid(row=2, column=1, pady=3, padx=5)
+        ttk.Label(input_frame, text="Priority:", anchor="center", width=20).grid(row=2, column=1, pady=3)
         self.priority_menu = tk.OptionMenu(input_frame, self.priority_var, "Low", "Medium", "High")
         self.priority_menu.config(width=36)
-        self.priority_menu.grid(row=2, column=2, pady=3, padx=5)
+        self.priority_menu.grid(row=2, column=2, pady=3)
 
         add_task_frame = ttk.Frame(self.main_frame)
         add_task_frame.grid(row=2, column=0, pady=5)
