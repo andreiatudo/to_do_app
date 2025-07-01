@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime, timedelta
 import csv
 from tkcalendar import DateEntry, Calendar
+import time
+import threading
 
 class ToDoApp:
     def __init__(self, root):
@@ -11,6 +13,13 @@ class ToDoApp:
         self.root.title("To-Do List")
         self.root.geometry("800x600")
         self.root.minsize(600, 500)
+
+        # Add timer related variables
+        self.active_timer_id = None
+        self.timer_running = False
+        self.timer_thread = None
+        self.timer_start_time = 0
+        self.timer_accumulated_time = {}  # Store accumulated time for each task
 
         self.theme = "light"
         self.colors = {
@@ -22,9 +31,25 @@ class ToDoApp:
 
         self.conn = sqlite3.connect("todo.db")
         self.cursor = self.conn.cursor()
+        
+        # Create base table if it doesn't exist
         self.cursor.execute("""CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, deadline TEXT,
-            priority TEXT, completed BOOLEAN)""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            deadline TEXT,
+            priority TEXT,
+            completed BOOLEAN
+        )""")
+        
+        # Check if new columns exist and add them if they don't
+        existing_columns = [col[1] for col in self.cursor.execute("PRAGMA table_info(tasks)").fetchall()]
+        
+        if "duration" not in existing_columns:
+            self.cursor.execute("ALTER TABLE tasks ADD COLUMN duration INTEGER DEFAULT NULL")
+        
+        if "elapsed_time" not in existing_columns:
+            self.cursor.execute("ALTER TABLE tasks ADD COLUMN elapsed_time INTEGER DEFAULT 0")
+            
         self.conn.commit()
 
         self.task_var, self.deadline_var = tk.StringVar(), tk.StringVar()
@@ -75,18 +100,18 @@ class ToDoApp:
         self.priority_menu.grid(row=2, column=2, pady=3)
 
         add_task_frame = ttk.Frame(self.main_frame)
-        add_task_frame.grid(row=2, column=0, pady=5)
+        add_task_frame.grid(row=3, column=0, pady=5)
         ttk.Button(add_task_frame, text="Add Task", command=self.add_task).pack()
 
         sort_frame = ttk.Frame(self.main_frame)
-        sort_frame.grid(row=3, column=0, pady=5)
+        sort_frame.grid(row=4, column=0, pady=5)
         ttk.Button(sort_frame, text="Sort by Color", command=self.sort_by_color).grid(row=0, column=0, padx=3)
         ttk.Button(sort_frame, text="Sort by Deadline", command=self.load_tasks).grid(row=0, column=1, padx=3)
         self.view_button = ttk.Button(sort_frame, text="Toggle Calendar View", command=self.toggle_view)
         self.view_button.grid(row=0, column=2, padx=3)
 
         self.search_frame = ttk.Frame(self.main_frame)
-        self.search_frame.grid(row=4, column=0, sticky="we", pady=5)
+        self.search_frame.grid(row=5, column=0, sticky="we", pady=5)
         self.search_frame.columnconfigure(0, weight=1)
         self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var, width=40)
         self.search_entry.grid(row=0, column=0, sticky="we")
@@ -97,7 +122,7 @@ class ToDoApp:
 
         # Create both list and calendar views
         self.list_frame = ttk.Frame(self.main_frame)
-        self.list_frame.grid(row=5, column=0, sticky="nsew", pady=5)
+        self.list_frame.grid(row=6, column=0, sticky="nsew", pady=5)
         self.list_frame.grid_remove()  # Initially hidden
         
         self.listbox = tk.Listbox(self.list_frame, height=10, font=("TkDefaultFont", 12))
@@ -105,7 +130,7 @@ class ToDoApp:
         
         # Calendar view
         self.calendar_frame = ttk.Frame(self.main_frame)
-        self.calendar_frame.grid(row=5, column=0, sticky="nsew", pady=5)
+        self.calendar_frame.grid(row=6, column=0, sticky="nsew", pady=5)
         self.calendar = Calendar(self.calendar_frame, selectmode='none', date_pattern='dd-mm-yyyy')
         self.calendar.pack(fill=tk.BOTH, expand=True)
         
@@ -124,17 +149,23 @@ class ToDoApp:
         self.legend_button.grid(row=8, column=0, pady=5)
 
         btn_frame = ttk.Frame(self.main_frame)
-        btn_frame.grid(row=6, column=0, pady=5)
+        btn_frame.grid(row=9, column=0, pady=5)
         actions = [
             ("Delete Task", self.delete_task),
             ("Task Completed", self.complete_task),
             ("Edit Task", self.edit_task),
             ("Edit Deadline", self.edit_deadline),
+            ("Set Duration", self.set_task_duration),
+            ("Start/Stop Timer", self.toggle_timer),
             ("Export CSV", self.export_csv),
             ("Import CSV", self.import_csv),
         ]
         for i, (text, cmd) in enumerate(actions):
             ttk.Button(btn_frame, text=text, command=cmd).grid(row=0, column=i, padx=5)
+
+        # Add timer label
+        self.timer_label = ttk.Label(self.main_frame, text="No active timer", font=("TkDefaultFont", 10))
+        self.timer_label.grid(row=10, column=0, pady=5)
 
     def toggle_widget(self, widget, button):
         if widget.winfo_viewable():
@@ -209,7 +240,7 @@ class ToDoApp:
             messagebox.showwarning("ERROR", f"Date format issue: {str(e)}")
 
     def get_task_color(self, task_info):
-        task_id, title, deadline, priority, completed = task_info
+        task_id, title, deadline, priority, completed, duration, elapsed_time = task_info
         if completed: return "#888"
         
         try:
@@ -233,20 +264,46 @@ class ToDoApp:
             return "green"
         return "black"
 
+    def format_time(self, seconds):
+        if seconds is None:
+            return ""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        if hours > 0:
+            return f"{hours}h{minutes:02d}m{secs:02d}s"
+        elif minutes > 0:
+            return f"{minutes}m{secs:02d}s"
+        return f"{secs}s"
+
     def load_tasks(self):
         self.listbox.delete(0, tk.END)
         self.displayed_task_ids = []
         search_term = "" if self.search_is_placeholder else self.search_var.get().lower()
 
-        self.cursor.execute("SELECT id, title, deadline, priority, completed FROM tasks ORDER BY deadline ASC, priority DESC")
+        self.cursor.execute("""
+            SELECT id, title, deadline, priority, completed, duration, elapsed_time 
+            FROM tasks ORDER BY deadline ASC, priority DESC
+        """)
         tasks = self.cursor.fetchall()
 
         for task in tasks:
-            task_id, title, deadline, priority, completed = task
+            task_id, title, deadline, priority, completed, duration, elapsed_time = task
             if search_term and search_term not in title.lower():
                 continue
+            
             status = "✔" if completed else "✘"
-            display_text = f"{status} {title} (Deadline: {deadline}, Priority: {priority})"
+            time_info = ""
+            if duration is not None:
+                elapsed = elapsed_time or 0
+                duration_str = self.format_time(duration)
+                elapsed_str = self.format_time(elapsed)
+                time_info = f", Duration: {duration_str}"
+                if elapsed > 0:
+                    percentage = min(100, int((elapsed / duration) * 100))
+                    time_info += f" (Progress: {elapsed_str} - {percentage}%)"
+                
+            display_text = f"{status} {title} (Deadline: {deadline}, Priority: {priority}{time_info})"
             self.listbox.insert(tk.END, display_text)
             self.displayed_task_ids.append(task_id)
             self.listbox.itemconfig(len(self.displayed_task_ids) - 1, {'fg': self.get_task_color(task)})
@@ -257,15 +314,25 @@ class ToDoApp:
     def sort_by_color(self):
         self.listbox.delete(0, tk.END)
         self.displayed_task_ids = []
-        self.cursor.execute("SELECT id, title, deadline, priority, completed FROM tasks")
+        self.cursor.execute("SELECT id, title, deadline, priority, completed, duration, elapsed_time FROM tasks")
         tasks = self.cursor.fetchall()
         color_priority = {"purple": 0, "red": 1, "orange": 2, "green": 3, "black": 4, "#888": 5}
         sorted_tasks = sorted(tasks, key=lambda task: color_priority.get(self.get_task_color(task), 6))
         
         for task in sorted_tasks:
-            task_id, title, deadline, priority, completed = task
+            task_id, title, deadline, priority, completed, duration, elapsed_time = task
             status = "✔" if completed else "✘"
-            display_text = f"{status} {title} (Deadline: {deadline}, Priority: {priority})"
+            time_info = ""
+            if duration is not None:
+                elapsed = elapsed_time or 0
+                if elapsed > 0:
+                    hours = elapsed // 3600
+                    minutes = (elapsed % 3600) // 60
+                    time_info = f", Time: {hours}h{minutes}m"
+                    if duration > 0:
+                        percentage = min(100, int((elapsed / duration) * 100))
+                        time_info += f" ({percentage}%)"
+            display_text = f"{status} {title} (Deadline: {deadline}, Priority: {priority}{time_info})"
             self.listbox.insert(tk.END, display_text)
             self.displayed_task_ids.append(task_id)
             self.listbox.itemconfig(len(self.displayed_task_ids) - 1, {'fg': self.get_task_color(task)})
@@ -389,33 +456,238 @@ class ToDoApp:
         for tag in self.calendar.get_calevents():
             self.calendar.calevent_remove(tag)
             
-        # Get all tasks
-        self.cursor.execute("SELECT id, title, deadline, priority, completed FROM tasks")
-        tasks = self.cursor.fetchall()
+        # Get all tasks for each date to determine highest priority
+        self.cursor.execute("""
+            SELECT deadline, GROUP_CONCAT(priority || ',' || completed || ',' || id) 
+            FROM tasks 
+            GROUP BY deadline
+        """)
+        date_tasks = self.cursor.fetchall()
         
-        # Define colors for different priorities
-        priority_colors = {
-            "High": "red",
-            "Medium": "orange",
-            "Low": "green"
-        }
-        
-        # Add tasks to calendar
-        for task_id, title, deadline, priority, completed in tasks:
+        # Process each date's tasks
+        for deadline, task_data in date_tasks:
             try:
                 date = datetime.strptime(deadline, self.date_format).date()
-                color = "#888888" if completed else priority_colors.get(priority, "blue")
+                tasks = task_data.split(',')
+                highest_priority = "Low"
+                all_completed = True
+                task_ids = []
+                
+                # Process tasks in groups of 3 (priority,completed,id)
+                for i in range(0, len(tasks), 3):
+                    priority = tasks[i]
+                    completed = tasks[i+1] == "1"
+                    task_id = tasks[i+2]
+                    task_ids.append(task_id)
+                    
+                    if not completed:
+                        all_completed = False
+                        if priority == "High" or (priority == "Medium" and highest_priority == "Low"):
+                            highest_priority = priority
+                
+                # Get task titles for this date
+                task_id_list = ','.join(task_ids)
+                self.cursor.execute(f"SELECT title FROM tasks WHERE id IN ({task_id_list})")
+                titles = [row[0] for row in self.cursor.fetchall()]
+                combined_title = "; ".join(titles)
+                
+                # Determine color based on highest priority task
+                if all_completed:
+                    color = "#888888"  # Gray for completed
+                else:
+                    # Use the same color logic as get_task_color
+                    today = datetime.today().date()
+                    tomorrow = today + timedelta(days=1)
+                    day_after = today + timedelta(days=2)
+                    
+                    if date < today:
+                        color = "purple"
+                    elif date == today and highest_priority in ("High", "Medium"):
+                        color = "red"
+                    elif date == today and highest_priority == "Low" or \
+                         date in [tomorrow, day_after] and highest_priority in ("High", "Medium"):
+                        color = "orange"
+                    elif date in [tomorrow, day_after] and highest_priority == "Low" or \
+                         date > day_after and highest_priority in ("High", "Medium"):
+                        color = "green"
+                    else:
+                        color = "black"
                 
                 # Create calendar event
+                tag = f"date_{deadline}"
                 self.calendar.calevent_create(
                     date,
-                    title,
-                    tags=[str(task_id)]
+                    combined_title,
+                    tags=[tag]
                 )
                 # Configure tag with color
-                self.calendar.tag_config(str(task_id), background=color)
-            except ValueError:
+                self.calendar.tag_config(tag, background=color)
+            except (ValueError, IndexError):
                 continue
+
+    def set_task_duration(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            return messagebox.showwarning("ERROR", "Select a task to set duration!")
+        task_index = sel[0]
+        if 0 <= task_index < len(self.displayed_task_ids):
+            task_id = self.displayed_task_ids[task_index]
+            
+            # Create a top-level window for duration input
+            top = tk.Toplevel(self.root)
+            top.title("Set Task Duration")
+            top.geometry("300x200")
+            
+            # Add input fields for hours, minutes, and seconds
+            input_frame = ttk.Frame(top)
+            input_frame.pack(pady=10)
+            
+            hours_var = tk.StringVar(value="0")
+            minutes_var = tk.StringVar(value="0")
+            seconds_var = tk.StringVar(value="0")
+            
+            # Hours
+            ttk.Label(input_frame, text="Hours:").grid(row=0, column=0, padx=5)
+            ttk.Entry(input_frame, textvariable=hours_var, width=10).grid(row=0, column=1, padx=5)
+            
+            # Minutes
+            ttk.Label(input_frame, text="Minutes:").grid(row=1, column=0, padx=5, pady=5)
+            ttk.Entry(input_frame, textvariable=minutes_var, width=10).grid(row=1, column=1, padx=5, pady=5)
+            
+            # Seconds
+            ttk.Label(input_frame, text="Seconds:").grid(row=2, column=0, padx=5)
+            ttk.Entry(input_frame, textvariable=seconds_var, width=10).grid(row=2, column=1, padx=5)
+            
+            def set_duration():
+                try:
+                    hours = int(hours_var.get())
+                    minutes = int(minutes_var.get())
+                    seconds = int(seconds_var.get())
+                    
+                    if hours < 0 or minutes < 0 or seconds < 0:
+                        raise ValueError("Time values cannot be negative")
+                    if minutes >= 60 or seconds >= 60:
+                        raise ValueError("Minutes and seconds must be less than 60")
+                        
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
+                    self.cursor.execute("UPDATE tasks SET duration=? WHERE id=?", (total_seconds, task_id))
+                    self.conn.commit()
+                    self.load_tasks()
+                    top.destroy()
+                except ValueError as e:
+                    messagebox.showerror("Invalid Input", str(e))
+            
+            def set_unknown():
+                self.cursor.execute("UPDATE tasks SET duration=NULL WHERE id=?", (task_id,))
+                self.conn.commit()
+                self.load_tasks()
+                top.destroy()
+            
+            # Add buttons
+            button_frame = ttk.Frame(top)
+            button_frame.pack(pady=10)
+            ttk.Button(button_frame, text="Set Duration", command=set_duration).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Unknown Duration", command=set_unknown).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Cancel", command=top.destroy).pack(side=tk.LEFT, padx=5)
+            
+            # Center the window
+            top.transient(self.root)
+            top.grab_set()
+            self.root.wait_window(top)
+
+    def toggle_timer(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            return messagebox.showwarning("ERROR", "Select a task to toggle timer!")
+        
+        task_index = sel[0]
+        if 0 <= task_index < len(self.displayed_task_ids):
+            task_id = self.displayed_task_ids[task_index]
+            
+            if self.timer_running and self.active_timer_id == task_id:
+                # Stop timer
+                self.timer_running = False
+                current_time = time.time()
+                elapsed = int(current_time - self.timer_start_time)
+                self.timer_accumulated_time[task_id] = self.timer_accumulated_time.get(task_id, 0) + elapsed
+                
+                # Update database
+                self.cursor.execute("UPDATE tasks SET elapsed_time=? WHERE id=?", 
+                                 (self.timer_accumulated_time[task_id], task_id))
+                self.conn.commit()
+                
+                self.timer_label.config(text="No active timer")
+                self.active_timer_id = None
+                
+                # Refresh the task list to show updated time
+                self.load_tasks()
+                if self.current_view == "calendar":
+                    self.update_calendar_view()
+            else:
+                # Stop any running timer first
+                if self.timer_running:
+                    self.toggle_timer()  # This will stop the current timer
+                
+                # Start new timer
+                self.timer_running = True
+                self.active_timer_id = task_id
+                
+                # Get existing elapsed time from database
+                self.cursor.execute("SELECT elapsed_time FROM tasks WHERE id=?", (task_id,))
+                elapsed_time = self.cursor.fetchone()[0] or 0
+                self.timer_accumulated_time[task_id] = elapsed_time
+                
+                self.timer_start_time = time.time()
+                self.update_timer()
+
+    def update_timer(self):
+        if not self.timer_running:
+            return
+            
+        current_time = time.time()
+        elapsed = int(current_time - self.timer_start_time)
+        
+        # Create a new connection for this thread
+        thread_conn = sqlite3.connect("todo.db")
+        thread_cursor = thread_conn.cursor()
+        
+        try:
+            thread_cursor.execute("SELECT title, duration FROM tasks WHERE id=?", (self.active_timer_id,))
+            task = thread_cursor.fetchone()
+            if task:
+                title, duration = task
+                total_elapsed = self.timer_accumulated_time.get(self.active_timer_id, 0) + elapsed
+                
+                # Update elapsed time
+                thread_cursor.execute("UPDATE tasks SET elapsed_time=? WHERE id=?", 
+                                   (total_elapsed, self.active_timer_id))
+                thread_conn.commit()
+                
+                # Format display text
+                hours = total_elapsed // 3600
+                minutes = (total_elapsed % 3600) // 60
+                seconds = total_elapsed % 60
+                timer_text = f"Timer for '{title}': {hours:02d}:{minutes:02d}:{seconds:02d}"
+                
+                if duration:
+                    percentage = min(100, int((total_elapsed / duration) * 100))
+                    timer_text += f" ({percentage}%)"
+                    
+                    # Show congratulations message when task is completed
+                    if total_elapsed >= duration and self.timer_running:
+                        self.timer_running = False
+                        messagebox.showinfo("Congratulations!", f"You have completed the task: {title}!")
+                        self.timer_label.config(text="No active timer")
+                        self.active_timer_id = None
+                        return
+                
+                self.timer_label.config(text=timer_text)
+        finally:
+            thread_cursor.close()
+            thread_conn.close()
+            
+        if self.timer_running:
+            self.root.after(1000, self.update_timer)
 
 if __name__ == "__main__":
     root = tk.Tk()
