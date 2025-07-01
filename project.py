@@ -281,6 +281,17 @@ class ToDoApp:
         self.displayed_task_ids = []
         search_term = "" if self.search_is_placeholder else self.search_var.get().lower()
 
+        # First, check and update tasks that have reached 100%
+        self.cursor.execute("""
+            UPDATE tasks 
+            SET completed = 1 
+            WHERE duration IS NOT NULL 
+            AND elapsed_time >= duration 
+            AND completed = 0
+        """)
+        self.conn.commit()
+
+        # Then load all tasks
         self.cursor.execute("""
             SELECT id, title, deadline, priority, completed, duration, elapsed_time 
             FROM tasks ORDER BY deadline ASC, priority DESC
@@ -616,6 +627,16 @@ class ToDoApp:
                                  (self.timer_accumulated_time[task_id], task_id))
                 self.conn.commit()
                 
+                # Check if task should be marked as completed
+                self.cursor.execute("SELECT title, duration FROM tasks WHERE id=?", (task_id,))
+                task = self.cursor.fetchone()
+                if task:
+                    title, duration = task
+                    if duration and self.timer_accumulated_time[task_id] >= duration:
+                        self.cursor.execute("UPDATE tasks SET completed=1 WHERE id=?", (task_id,))
+                        self.conn.commit()
+                        messagebox.showinfo("Congratulations!", f"You have completed the task: {title}!")
+                
                 self.timer_label.config(text="No active timer")
                 self.active_timer_id = None
                 
@@ -673,12 +694,19 @@ class ToDoApp:
                     percentage = min(100, int((total_elapsed / duration) * 100))
                     timer_text += f" ({percentage}%)"
                     
-                    # Show congratulations message when task is completed
+                    # Show congratulations message and mark task as completed when task is completed
                     if total_elapsed >= duration and self.timer_running:
                         self.timer_running = False
+                        # Mark task as completed
+                        thread_cursor.execute("UPDATE tasks SET completed=1 WHERE id=?", (self.active_timer_id,))
+                        thread_conn.commit()
                         messagebox.showinfo("Congratulations!", f"You have completed the task: {title}!")
                         self.timer_label.config(text="No active timer")
                         self.active_timer_id = None
+                        # Refresh the task list to show the completed status
+                        self.root.after(0, self.load_tasks)
+                        if self.current_view == "calendar":
+                            self.root.after(0, self.update_calendar_view)
                         return
                 
                 self.timer_label.config(text=timer_text)
