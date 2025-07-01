@@ -12,7 +12,7 @@ class ToDoApp:
         self.root = root
         self.root.title("To-Do List")
         self.root.geometry("800x600")
-        self.root.minsize(600, 500)
+        self.root.minsize(800, 600)
 
         # Add timer related variables
         self.active_timer_id = None
