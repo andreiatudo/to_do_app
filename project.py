@@ -3,7 +3,7 @@ from tkinter import messagebox, ttk, simpledialog
 import sqlite3
 from datetime import datetime, timedelta
 import csv
-from tkcalendar import DateEntry
+from tkcalendar import DateEntry, Calendar
 
 class ToDoApp:
     def __init__(self, root):
@@ -82,6 +82,8 @@ class ToDoApp:
         sort_frame.grid(row=3, column=0, pady=5)
         ttk.Button(sort_frame, text="Sort by Color", command=self.sort_by_color).grid(row=0, column=0, padx=3)
         ttk.Button(sort_frame, text="Sort by Deadline", command=self.load_tasks).grid(row=0, column=1, padx=3)
+        self.view_button = ttk.Button(sort_frame, text="Toggle Calendar View", command=self.toggle_view)
+        self.view_button.grid(row=0, column=2, padx=3)
 
         self.search_frame = ttk.Frame(self.main_frame)
         self.search_frame.grid(row=4, column=0, sticky="we", pady=5)
@@ -93,9 +95,22 @@ class ToDoApp:
         self.search_entry.bind("<FocusIn>", lambda e: self.set_search_placeholder(False))
         self.search_entry.bind("<FocusOut>", lambda e: self.set_search_placeholder(True) if not self.search_var.get() else None)
 
-        self.listbox = tk.Listbox(self.main_frame, height=10, font=("TkDefaultFont", 12))
-        self.listbox.grid(row=5, column=0, sticky="nsew", pady=5)
-        self.main_frame.rowconfigure(5, weight=1)
+        # Create both list and calendar views
+        self.list_frame = ttk.Frame(self.main_frame)
+        self.list_frame.grid(row=5, column=0, sticky="nsew", pady=5)
+        self.list_frame.grid_remove()  # Initially hidden
+        
+        self.listbox = tk.Listbox(self.list_frame, height=10, font=("TkDefaultFont", 12))
+        self.listbox.pack(fill=tk.BOTH, expand=True)
+        
+        # Calendar view
+        self.calendar_frame = ttk.Frame(self.main_frame)
+        self.calendar_frame.grid(row=5, column=0, sticky="nsew", pady=5)
+        self.calendar = Calendar(self.calendar_frame, selectmode='none', date_pattern='dd-mm-yyyy')
+        self.calendar.pack(fill=tk.BOTH, expand=True)
+        
+        self.current_view = "list"
+        self.toggle_view()  # Initialize the view
 
         self.legend_text = "Color Legend:\nGray – Completed\nPurple – Deadline passed\nRed – Deadline today & priority High/Medium\n" + \
                          "Orange – Deadline today & Low OR tomorrow/the day after & High/Medium\n" + \
@@ -235,6 +250,9 @@ class ToDoApp:
             self.listbox.insert(tk.END, display_text)
             self.displayed_task_ids.append(task_id)
             self.listbox.itemconfig(len(self.displayed_task_ids) - 1, {'fg': self.get_task_color(task)})
+            
+        if self.current_view == "calendar":
+            self.update_calendar_view()
 
     def sort_by_color(self):
         self.listbox.delete(0, tk.END)
@@ -351,6 +369,53 @@ class ToDoApp:
                 pass
         if reminders: messagebox.showwarning("Reminders", "\n".join(reminders))
         self.root.after(3600000, self.check_reminders)
+
+    def toggle_view(self):
+        if self.current_view == "list":
+            self.list_frame.grid_remove()
+            self.calendar_frame.grid()
+            self.current_view = "calendar"
+            self.view_button.config(text="Show List View")
+            self.update_calendar_view()
+        else:
+            self.calendar_frame.grid_remove()
+            self.list_frame.grid()
+            self.current_view = "list"
+            self.view_button.config(text="Show Calendar View")
+            self.load_tasks()
+    
+    def update_calendar_view(self):
+        # Clear existing tags
+        for tag in self.calendar.get_calevents():
+            self.calendar.calevent_remove(tag)
+            
+        # Get all tasks
+        self.cursor.execute("SELECT id, title, deadline, priority, completed FROM tasks")
+        tasks = self.cursor.fetchall()
+        
+        # Define colors for different priorities
+        priority_colors = {
+            "High": "red",
+            "Medium": "orange",
+            "Low": "green"
+        }
+        
+        # Add tasks to calendar
+        for task_id, title, deadline, priority, completed in tasks:
+            try:
+                date = datetime.strptime(deadline, self.date_format).date()
+                color = "#888888" if completed else priority_colors.get(priority, "blue")
+                
+                # Create calendar event
+                self.calendar.calevent_create(
+                    date,
+                    title,
+                    tags=[str(task_id)]
+                )
+                # Configure tag with color
+                self.calendar.tag_config(str(task_id), background=color)
+            except ValueError:
+                continue
 
 if __name__ == "__main__":
     root = tk.Tk()
