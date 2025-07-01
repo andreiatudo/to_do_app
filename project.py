@@ -93,7 +93,7 @@ class ToDoApp:
         self.search_entry.bind("<FocusIn>", lambda e: self.set_search_placeholder(False))
         self.search_entry.bind("<FocusOut>", lambda e: self.set_search_placeholder(True) if not self.search_var.get() else None)
 
-        self.listbox = tk.Listbox(self.main_frame, height=10, font=12)
+        self.listbox = tk.Listbox(self.main_frame, height=10, font=("TkDefaultFont", 12))
         self.listbox.grid(row=5, column=0, sticky="nsew", pady=5)
         self.main_frame.rowconfigure(5, weight=1)
 
@@ -114,6 +114,7 @@ class ToDoApp:
             ("Delete Task", self.delete_task),
             ("Task Completed", self.complete_task),
             ("Edit Task", self.edit_task),
+            ("Edit Deadline", self.edit_deadline),
             ("Export CSV", self.export_csv),
             ("Import CSV", self.import_csv),
         ]
@@ -274,6 +275,45 @@ class ToDoApp:
     def delete_task(self): self.task_action("delete")
     def complete_task(self): self.task_action("complete")
     def edit_task(self): self.task_action("edit")
+
+    def edit_deadline(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            return messagebox.showwarning("ERROR", "Select a task to edit deadline!")
+        task_index = sel[0]
+        if 0 <= task_index < len(self.displayed_task_ids):
+            task_id = self.displayed_task_ids[task_index]
+            
+            # Create a top-level window for the date picker
+            top = tk.Toplevel(self.root)
+            top.title("Edit Deadline")
+            top.geometry("300x150")
+            
+            # Add a date entry widget
+            date_label = ttk.Label(top, text="Select new deadline:")
+            date_label.pack(pady=10)
+            date_picker = DateEntry(top, width=12, background='darkblue',
+                                  foreground='white', borderwidth=2,
+                                  date_pattern='dd-mm-yyyy')
+            date_picker.pack(pady=10)
+            
+            def update_deadline():
+                new_deadline = date_picker.get_date().strftime(self.date_format)
+                if datetime.strptime(new_deadline, self.date_format).date() < datetime.today().date():
+                    messagebox.showerror("Invalid Date", "Deadline cannot be in the past!")
+                    return
+                self.cursor.execute("UPDATE tasks SET deadline=? WHERE id=?", (new_deadline, task_id))
+                self.conn.commit()
+                self.load_tasks()
+                top.destroy()
+            
+            # Add confirmation button
+            ttk.Button(top, text="Update Deadline", command=update_deadline).pack(pady=10)
+            
+            # Center the window
+            top.transient(self.root)
+            top.grab_set()
+            self.root.wait_window(top)
 
     def export_csv(self):
         with open("tasks.csv", "w", newline='') as f:
